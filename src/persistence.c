@@ -82,13 +82,14 @@ static int _pushJobList(const char* wbuf, int len)
     }
     char* start = pmgr->joblist->buf + pmgr->joblist->widx;
 
-    memset(start, 0, JOBLEN_SIZE); //这边要先设置长度位为0, 以供读线程做自旋判断
-    _incJoblistWriteidx(len + JOBLEN_SIZE);
 
     memcpy(start + JOBLEN_SIZE, wbuf, len);
-    memcpy(start, &len, JOBLEN_SIZE); //写入完毕以后再设置长度标记位
+    memcpy(start, &len, JOBLEN_SIZE);
 
     redisLog(REDIS_DEBUG, "write joblist widx %d  wbuf %p", pmgr->joblist->widx, start);
+    
+    _incJoblistWriteidx(len + JOBLEN_SIZE);
+    
     return PERSISTENCE_RET_PUSHJOBLIST_SUCCESS;
 }
 
@@ -139,9 +140,7 @@ static int _popJobList(char** rbuf)
     }
     int len = 0;
     char* start = pmgr->joblist->buf + pmgr->joblist->ridx;
-    while (len == 0) { //这边要自旋判断下写线程是否已经写入完毕
-        memcpy(&len, start, JOBLEN_SIZE);
-    }
+    memcpy(&len, start, JOBLEN_SIZE);
     *rbuf = start + JOBLEN_SIZE;
     redisLog(REDIS_DEBUG, "read joblist ridx %d rbuf %p", pmgr->joblist->ridx, start);
     return len;
