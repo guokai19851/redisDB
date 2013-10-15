@@ -4,6 +4,7 @@
 #include "redis.h"
 #define MAX_KEY_LEN 32
 #define DB_RET_TABLE_NOTEXIST 1146
+#define MAX_PERSISTENCE_BUF_SIZE 10240 
 #define DB_RET_NOTRESULT -1
 #define DB_RET_SUCCESS 0
 #define DB_RET_CONNERROR -2
