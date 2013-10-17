@@ -58,7 +58,7 @@ int initDB(const char* host, const int port, const char* user, const char* pwd, 
         if (_connDB(dbConns[i].conn, host, port, user, pwd, dbName)) {
             return DB_RET_CONNERROR;
         }
-        dbConns[i].sqlbuff = (char*)zmalloc(MAX_PERSISTENCE_BUF_SIZE * 2);
+        dbConns[i].sqlbuff = (char*)zmalloc(MAX_SQL_BUF_SIZE * 2);
     }
     return DB_RET_SUCCESS;
 }

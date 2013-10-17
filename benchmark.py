@@ -21,9 +21,10 @@ def start(args):
     rCnt, name = args
     c = redis.Redis(host = 'localhost', port = 6379, db = 9)
     for i in range(1, rCnt):
-#        c.set(name, "aaoo" + str(i));
-#        c.lpush(name, "aaaaaaaaaaa" + str(i))
-        c.incr("abc")
+        c.set(name, "aaoo" + str(i));
+        c.lpush(name+"list", "aaaaaa_" + str(i))
+#        time.sleep(0.1)
+#        c.incr("abc")
 
 if __name__ == '__main__':
     p = Pool(50)

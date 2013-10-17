@@ -1632,7 +1632,7 @@ void initServer()
             redisLog(REDIS_WARNING, "initDB error %d", ret);
             exit(1);
         }
-        ret = initPersistence(MAX_PERSISTENCE_BUF_SIZE * 1000, server.persistenceMmapFile); 
+        ret = initPersistence(MAX_PERSISTENCE_BUF_SIZE * 2, server.persistenceMmapFile); 
         if (ret != PERSISTENCE_RET_INIT_SUCCESS) {
             redisLog(REDIS_WARNING, "initPersistence error %d", ret);
             exit(1);
@@ -2402,6 +2402,11 @@ sds genRedisInfoString(char* section)
         if (sections++) {
             info = sdscat(info, "\r\n");
         }
+        int untreatedSize = 0;
+        int sleepSum = 0;
+        unsigned long long wsize = 0;
+        unsigned long long rsize = 0;
+        persistenceInfo(&untreatedSize, &sleepSum, &wsize, &rsize);
         info = sdscatprintf(info,
                             "# Stats\r\n"
                             "total_connections_received:%lld\r\n"
@@ -2416,7 +2421,9 @@ sds genRedisInfoString(char* section)
                             "pubsub_patterns:%lu\r\n"
                             "latest_fork_usec:%lld\r\n"
                             "persistence sleep sum :%d\r\n"
-                            "persistence untreated size :%d\r\n",
+                            "persistence untreated size :%d\r\n"
+                            "persistence wsize :%lld\r\n"
+                            "persistence rsize :%lld\r\n",
                             server.stat_numconnections,
                             server.stat_numcommands,
                             getOperationsPerSecond(),
@@ -2428,8 +2435,10 @@ sds genRedisInfoString(char* section)
                             dictSize(server.pubsub_channels),
                             listLength(server.pubsub_patterns),
                             server.stat_fork_time,
-                            persistenceWaitSleepSum(),
-                            persistenceUntreatedSize());
+                            sleepSum,
+                            untreatedSize,
+                            wsize, 
+                            rsize);
     }
 
     /* Replication */
