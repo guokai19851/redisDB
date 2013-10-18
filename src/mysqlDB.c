@@ -257,7 +257,7 @@ static int _selectStrFromDB(redisClient* c)
     *end++ = '\0';
     int ret =  _query(sql, conn);
     MYSQL_RES* res;
-    if ((ret == 0) && (res = mysql_store_result(conn))) {
+    if ((ret == DB_RET_SUCCESS) && (res = mysql_store_result(conn))) {
         if (mysql_num_rows(res) == 0) {
             mysql_free_result(res);
             return DB_RET_NOTRESULT;
@@ -298,9 +298,7 @@ static int _writeStrToDB(CmdArgv* key, CmdArgv* val, DBConn* dbConn)
     end += mysql_real_escape_string(conn, end, val->buf, val->len);
     end = _strmov(end, "' ON DUPLICATE KEY UPDATE `val` = '");
     end += mysql_real_escape_string(conn, end, val->buf, val->len);
-    *end++ = '\'';
-
-    *end++ = '\0';
+    *end++ = '\''; *end++ = '\0';
     int ret = _query(sql, conn);
     if (ret == DB_RET_TABLE_NOTEXIST) {
         _createStrTable(table, dbConn);
@@ -362,8 +360,7 @@ static int _pushListToDB(CmdArgv* key, CmdArgv* val, int where, int createNotExi
         return DB_RET_LIST_NOT_WHERE;
     }
     end += mysql_real_escape_string(conn, end, table, strlen(table));
-    *end++ = '`';
-    *end++ = '\0';
+    *end++ = '`'; *end++ = '\0';
     int ret = _query(sql, conn);
     if (ret == DB_RET_TABLE_NOTEXIST) {
         if (createNotExist) {
@@ -374,7 +371,7 @@ static int _pushListToDB(CmdArgv* key, CmdArgv* val, int where, int createNotExi
         }
     }
     MYSQL_RES* res;
-    if ((ret == 0) && (res = mysql_store_result(conn))) {
+    if ((ret == DB_RET_SUCCESS) && (res = mysql_store_result(conn))) {
         if (mysql_num_rows(res) == 0) {
             order[0] = '0'; 
         } else {
@@ -394,8 +391,7 @@ static int _pushListToDB(CmdArgv* key, CmdArgv* val, int where, int createNotExi
     end += mysql_real_escape_string(conn, end, ID, strlen(ID));
     end = _strmov(end, "' , `val` = '");
     end += mysql_real_escape_string(conn, end, val->buf, val->len);
-    *end++ = '\'';
-    *end++ = '\0';
+    *end++ = '\''; *end++ = '\0';
 
     ret = _query(sql, conn);
     assert(ret != DB_RET_TABLE_NOTEXIST);
@@ -443,7 +439,7 @@ static int _loadListFromDB(redisClient* c)
 
     int ret =  _query(sql, conn);
     MYSQL_RES* res;
-    if ((ret == 0) && (res = mysql_store_result(conn))) {
+    if ((ret == DB_RET_SUCCESS) && (res = mysql_store_result(conn))) {
         int num = mysql_num_rows(res);
         if (num == 0) {
             mysql_free_result(res);
@@ -481,7 +477,7 @@ static int _loadZsetFromDB(redisClient* c)
 
     int ret =  _query(sql, conn);
     MYSQL_RES* res;
-    if ((ret == 0) && (res = mysql_store_result(conn))) {
+    if ((ret == DB_RET_SUCCESS) && (res = mysql_store_result(conn))) {
         int num = mysql_num_rows(res);
         if (num == 0) {
             mysql_free_result(res);
@@ -540,8 +536,7 @@ static int _zaddToDB(CmdArgv* key, CmdArgv* score, CmdArgv* member, int incr, DB
         end = _strmov(end, "' ON DUPLICATE KEY UPDATE `score` = '");
     }
     end += mysql_real_escape_string(conn, end, score->buf, score->len);
-    *end++ = '\'';
-    *end++ = '\0';
+    *end++ = '\''; *end++ = '\0';
 
     int ret = _query(sql, conn);
     if (ret == DB_RET_TABLE_NOTEXIST) {
@@ -564,7 +559,7 @@ static int _loadIncrFromDB(redisClient* c)
     int ret =  _query(sql, conn);
     MYSQL_RES* res;
 
-    if ((ret == 0) && (res = mysql_store_result(conn))) {
+    if ((ret == DB_RET_SUCCESS) && (res = mysql_store_result(conn))) {
         if (mysql_num_rows(res) == 0) {
             mysql_free_result(res);
             return DB_RET_NOTRESULT;
@@ -596,8 +591,7 @@ static int _incrToDB(CmdArgv* key, CmdArgv* incr, DBConn* dbConn)
     end += mysql_real_escape_string(conn, end, incrStr, strlen(incrStr));
     end = _strmov(end, "' ON DUPLICATE KEY UPDATE `incr` = `incr` + '");
     end += mysql_real_escape_string(conn, end, incrStr, strlen(incrStr));
-    *end++ = '\'';
-    *end++ = '\0';
+    *end++ = '\''; *end++ = '\0';
     int ret = _query(sql, conn);
     if (ret == DB_RET_TABLE_NOTEXIST) {
         _createIncrTable(dbConn);
@@ -621,22 +615,42 @@ static int _zremrangeToDB(CmdArgv* key, CmdArgv* start, CmdArgv* stop, int rankO
     end += mysql_real_escape_string(conn, end, ID, strlen(ID));
 
     if (rankOrScore) {
+        end = _strmov(end, "' AND `member` IN (");
         int limitNum = atoi(stop->buf) - atoi(start->buf) + 1;
         if (limitNum <= 0) {//暂不支持zremrangebyrank tzset 0 -1 这种形式
             return DB_RET_NOT_SUPPORT;
         }
         char limit[8] = {'\0'};
         sprintf(limit, "%d", limitNum);
-
-        end = _strmov(end, "' AND `member` IN ( SELECT * FROM (SELECT `member` FROM `");
-        end += mysql_real_escape_string(conn, end, table, strlen(table));
-        end = _strmov(end, "` WHERE ID = '");
-        end += mysql_real_escape_string(conn, end, ID, strlen(ID));
-        end = _strmov(end, "' ORDER BY `score` ASC LIMIT ");
-        end += mysql_real_escape_string(conn, end, start->buf, start->len);
-        end = _strmov(end, ", ");
-        end += mysql_real_escape_string(conn, end, limit, strlen(limit));
-        end = _strmov(end, " ) AS t)  ");
+        
+        char sql_2[MAX_SQL_BUF_SIZE] = {'\0'};
+        char* end_2 = _strmov(sql_2, "SELECT `member` FROM `");
+        end_2 += mysql_real_escape_string(conn, end_2, table, strlen(table));
+        end_2 = _strmov(end_2, "` WHERE ID = '");
+        end_2 += mysql_real_escape_string(conn, end_2, ID, strlen(ID));
+        end_2 = _strmov(end_2, "' ORDER BY `score` ASC LIMIT ");
+        end_2 += mysql_real_escape_string(conn, end_2, start->buf, start->len);
+        end_2 = _strmov(end_2, ", ");
+        end_2 += mysql_real_escape_string(conn, end_2, limit, strlen(limit));
+        
+        MYSQL_RES* res;
+        int ret =  _query(sql_2, conn);
+        if ((ret == DB_RET_SUCCESS) && (res = mysql_store_result(conn))) {
+            int num = mysql_num_rows(res);
+            if (num == 0) {
+                mysql_free_result(res);
+                return DB_RET_NOTRESULT;
+            }
+            int i = 0;
+            for (; i < num; i++) {
+                MYSQL_ROW row = mysql_fetch_row(res);
+                *end++ = '\''; end = _strmov(end, row[0]); *end++ = '\'';
+                if (i < num - 1) {
+                    *end++ = ',';
+                }
+            }
+            end = _strmov(end, ")");
+        }
     } else {
         end = _strmov(end, "' AND `score` >= ");
         end += mysql_real_escape_string(conn, end, start->buf, start->len);
