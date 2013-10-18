@@ -21,14 +21,15 @@ def start(args):
     rCnt, name = args
     c = redis.Redis(host = 'localhost', port = 6379, db = 9)
     for i in range(1, rCnt):
-        c.set(name, "aaoo" + str(i));
-        c.lpush(name+"list", "aaaaaa_" + str(i))
+#        c.set(name, "aaoo" + str(i));
+#        c.lpush(name+"list", "aaaaaa_" + str(i))
 #        time.sleep(0.1)
 #        c.incr("abc")
+        c.zadd(name + "zset_" + str(i), **{'a': 1, 'b': 2, 'c': 3})
 
 if __name__ == '__main__':
     p = Pool(50)
     args = []
-    for i in range(0, 50):
+    for i in range(0, 500):
         args.append((100, "teststr"))
     p.map(start, args)

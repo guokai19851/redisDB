@@ -24,13 +24,16 @@ static int _initJoblist(int joblistsize);
 static void _incJoblistWriteidx(int inc);
 static void _incJoblistReadidx(int inc);
 static void* _persistenceMain(void* arg);
+static void* _writeDBPorcess(void* arg);
 static int _packCmd(char* wbuf, redisClient* c);
 static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** argv, redisCommandProc** procPtr);
-static void _waitSleep(void);
+static void _wait(void);
 static int _getjoblistWidx(void);
 static int _getjoblistRidx(void);
 static int _isjoblistempty(void);
 static int _isjoblistfull(int pushsize);
+static int _createMainWorkerProcess(void);
+static int _createWriteWorkerProcess(int num);
 
 //单读单写非阻塞队列
 typedef struct _JobList {
@@ -47,9 +50,17 @@ typedef struct _PMgr {
     int resize;
     int sleepSum;
     const char* mmapFile;
+    int workerNum;
 } PMgr;
 
+typedef struct _WriteWorker {
+    int buflen;
+    DBConn* dbConn;
+    char buf[];
+} WriteWorker;
+
 PMgr* pmgr;
+WriteWorker** writeWorkers;
 
 static int _initJoblist(int joblistsize)
 {
@@ -83,14 +94,11 @@ static int _initJoblist(int joblistsize)
 
 static int _pushJobList(const char* wbuf, int len)
 {
+    assert(pmgr->joblist->rsize <= pmgr->joblist->wsize);
     if (len >= MAX_PERSISTENCE_BUF_SIZE) {
         return PERSISTENCE_RET_SIZE_OVERFLOW;
     }
-    int widx = _getjoblistWidx();
-    assert(pmgr->joblist->rsize <= pmgr->joblist->wsize);
-    if (_isjoblistfull(len + JOBLEN_SIZE)) {
-        widx = _resizeJobListStart();
-    }
+    int widx = _isjoblistfull(len + JOBLEN_SIZE) ? _resizeJobListStart() : _getjoblistWidx();
     char* start = pmgr->joblist->buf + widx;
 
     memcpy(start + JOBLEN_SIZE, wbuf, len);
@@ -109,7 +117,7 @@ static int _resizeJobListStart(void)
     redisLog(REDIS_WARNING, "joblist resize start %d, %d", pmgr->joblist->wsize, pmgr->joblist->rsize);
     pmgr->resize = 1;
     while (pmgr->resize) {
-        _waitSleep();
+        _wait();
     }
     return _getjoblistWidx();
 }
@@ -118,8 +126,8 @@ static int _resizeJobListEnd(void)
 {
     int backuplen = pmgr->joblist->wsize - pmgr->joblist->rsize - pmgr->joblist->dirtysize;
     assert(backuplen <= pmgr->joblistsize);
-    int ridx = _getjoblistRidx();
     int widx = _getjoblistWidx();
+    int ridx = _getjoblistRidx();
     assert(widx <= ridx);
     int oldjoblistsize = pmgr->joblistsize;
     char* backup = zmalloc(backuplen);
@@ -155,11 +163,9 @@ static void _incJoblistReadidx(int inc)
 
 static int _popJobList(char** rbuf)
 {
+    assert(pmgr->joblist->rsize <= pmgr->joblist->wsize);
     int len = 0;
-    int ridx = _getjoblistRidx();
-    if (pmgr->resize) {
-        ridx = _resizeJobListEnd();
-    } 
+    int ridx = pmgr->resize ? _resizeJobListEnd() : _getjoblistRidx();
     assert(pmgr->joblist->rsize <= pmgr->joblist->wsize);
     if (_isjoblistempty()) { //empty
         return PERSISTENCE_RET_POPJOBLIST_EMPTY;
@@ -179,13 +185,22 @@ static void* _persistenceMain(void* arg)
         char* recv;
         int len = _popJobList(&recv);
         if (len == PERSISTENCE_RET_POPJOBLIST_EMPTY) {
-            _waitSleep();
+            _wait();
         } else {
-            CmdArgv* cmdArgvs[MAX_CMD_ARGV];
-            redisCommandProc* proc;
-            int argc = _unpackCmd(recv, len, cmdArgvs, &proc);
-            if (argc > 0) {
-                writeToDB(argc, cmdArgvs, proc);
+            while (1) {
+                int i = 0;
+                for (; i < pmgr->workerNum; i++) {
+                    if (writeWorkers[i]->buflen == 0) {
+                        memcpy(writeWorkers[i]->buf, recv, len);
+                        writeWorkers[i]->buflen = len;
+                        break;
+                    }
+                }
+                if (i == pmgr->workerNum) {
+                    _wait();
+                } else {
+                    break;
+                }
             }
             _incJoblistReadidx(len + JOBLEN_SIZE);
         }
@@ -193,21 +208,53 @@ static void* _persistenceMain(void* arg)
     return NULL;
 }
 
-int initPersistence(int joblistsize, const char* mmapFile)
+int initPersistence(int joblistsize, const char* mmapFile, int threadNum, const char* host, const int port, const char* user, const char* pwd, const char* dbName)
 {
     pmgr = (PMgr*)zmalloc(sizeof(PMgr));
     pmgr->mmapFile = mmapFile;
+    pmgr->workerNum = threadNum;
     pmgr->resize = 0;
     pmgr->sleepSum = 0;
     int ret = _initJoblist(joblistsize);
     if (ret != PERSISTENCE_RET_INIT_SUCCESS) {
         return ret;
     }
+    writeWorkers = (WriteWorker**)zmalloc(sizeof(WriteWorker*) * threadNum);
+    int i = 0;
+    for (; i < threadNum; i++) {
+        writeWorkers[i] = (WriteWorker*)zmalloc(sizeof(WriteWorker) + MAX_PERSISTENCE_BUF_SIZE);
+        writeWorkers[i]->dbConn = initDB(host, port, user, pwd, dbName);
+        writeWorkers[i]->buflen = 0;
+    }
+    ret = _createMainWorkerProcess();
+    if (ret != PERSISTENCE_RET_INIT_SUCCESS) {
+        return ret;
+    }
+    for (i = 0; i < threadNum; i++) {
+        ret = _createWriteWorkerProcess(i);
+        if (ret != PERSISTENCE_RET_INIT_SUCCESS) {
+            return ret;
+        }
+    }
+    return PERSISTENCE_RET_INIT_SUCCESS;
+}
+
+static int _createMainWorkerProcess(void)
+{
     pthread_t thread;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_create(&thread, &attr, _persistenceMain, NULL);
-    return PERSISTENCE_RET_INIT_SUCCESS;
+    return PERSISTENCE_RET_INIT_SUCCESS; 
+}
+
+static int _createWriteWorkerProcess(int num)
+{
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_create(&thread, &attr, _writeDBPorcess, writeWorkers[num]);
+    return PERSISTENCE_RET_INIT_SUCCESS;  
 }
 
 int packPersistenceJob(redisClient* c, char* wbuf)
@@ -291,7 +338,7 @@ void persistenceInfo(int* untreatedSize, int* sleepSum, unsigned long long * wsi
     *rsize = pmgr->joblist->rsize;
 }
 
-static void _waitSleep(void)
+static void _wait(void)
 {
     usleep(1000);
     pmgr->sleepSum += 1;
@@ -315,6 +362,7 @@ static int _getjoblistRidx(void)
 {
     int ridx = pmgr->joblist->rsize & pmgr->joblistsizeMask;
     if (ridx + MAX_PERSISTENCE_BUF_SIZE > pmgr->joblistsize) {
+        _getjoblistWidx();
         assert(pmgr->joblist->dirtysize == pmgr->joblistsize - ridx);
         pmgr->joblist->rsize += pmgr->joblistsize - ridx; 
         ridx = 0;  
@@ -330,4 +378,22 @@ static int _isjoblistempty(void)
 static int _isjoblistfull(int pushsize)
 {
     return pmgr->joblist->wsize + pushsize - pmgr->joblist->rsize > pmgr->joblistsize;
+}
+
+static void* _writeDBPorcess(void* arg)
+{
+    WriteWorker* worker = (WriteWorker*)arg;
+    while (1) {
+        if (worker->buflen == 0) {
+            _wait();
+        } else {
+            CmdArgv* cmdArgvs[MAX_CMD_ARGV];
+            redisCommandProc* proc;
+            int argc = _unpackCmd(worker->buf, worker->buflen, cmdArgvs, &proc);
+            assert(argc > 0);
+            writeToDB(argc, cmdArgvs, proc, worker->dbConn);
+            worker->buflen = 0;
+        }
+    }
+    return NULL;
 }

@@ -1627,12 +1627,12 @@ void initServer()
     if (server.mysqlHost != NULL && server.mysqlUser != NULL && server.mysqlPwd != NULL
         && server.mysqlDBName != NULL && server.mysqlPort != 0
     ) {
-        int ret = initDB(server.mysqlHost, server.mysqlPort, server.mysqlUser, server.mysqlPwd, server.mysqlDBName);
+        int ret = initReadDB(server.mysqlHost, server.mysqlPort, server.mysqlUser, server.mysqlPwd, server.mysqlDBName);
         if (ret != DB_RET_SUCCESS) {
             redisLog(REDIS_WARNING, "initDB error %d", ret);
             exit(1);
         }
-        ret = initPersistence(MAX_PERSISTENCE_BUF_SIZE * 2, server.persistenceMmapFile); 
+        ret = initPersistence(MAX_PERSISTENCE_BUF_SIZE * 2, server.persistenceMmapFile, server.writeThreadNum, server.mysqlHost, server.mysqlPort, server.mysqlUser, server.mysqlPwd, server.mysqlDBName); 
         if (ret != PERSISTENCE_RET_INIT_SUCCESS) {
             redisLog(REDIS_WARNING, "initPersistence error %d", ret);
             exit(1);
