@@ -376,7 +376,11 @@ static int _pushListToDB(CmdArgv* key, CmdArgv* val, int where, int createNotExi
             order[0] = '0'; 
         } else {
             MYSQL_ROW row = mysql_fetch_row(res);
-            memcpy(order, row[0], strlen(row[0])); 
+            if (row[0] == NULL) {
+                order[0] = '0'; 
+            } else {
+                memcpy(order, row[0], strlen(row[0])); 
+            }
         }
         mysql_free_result(res);
     } else {
@@ -642,8 +646,14 @@ static int _zremrangeToDB(CmdArgv* key, CmdArgv* start, CmdArgv* stop, int rankO
                 return DB_RET_NOTRESULT;
             }
             int i = 0;
+            int size = 0;
             for (; i < num; i++) {
                 MYSQL_ROW row = mysql_fetch_row(res);
+                size += strlen(row[0]);
+                if (size >= MAX_SQL_BUF_SIZE - 100) {
+                    end--;
+                    break;
+                }
                 *end++ = '\''; end = _strmov(end, row[0]); *end++ = '\'';
                 if (i < num - 1) {
                     *end++ = ',';
