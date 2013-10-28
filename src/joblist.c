@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 
 static int _resizeJobListStart(JobList* this);
-static int _initJobBuff(JobList* this, int listsize, const char* mmapFile);
+static int _initJobBuff(JobList* this, int listsize);
 static int _resizeJobListEnd(JobList* this);
 static void _incJoblistWsize(JobList* this, int inc);
 static int _jobListWidx(JobList* this);
@@ -80,7 +80,7 @@ static int _resizeJobListEnd(JobList* this)
         return _jobListRidx(this);
     }
     int oldsize = this->listsize;
-    char* backup = zmalloc(backuplen);
+    char* backup = malloc(backuplen);
     char* start = backup;
 
     int behindUnreadSize = oldsize - ridx - this->jobbuff->dirtysize;
@@ -89,14 +89,14 @@ static int _resizeJobListEnd(JobList* this)
     start += behindUnreadSize;
     memcpy(start, this->jobbuff->buf, frontUnreadSize);
 
-    _initJobBuff(this, oldsize * 2, this->mmapFile);
+    _initJobBuff(this, oldsize * 2);
 
     this->jobbuff->wSize = frontUnreadSize + behindUnreadSize;
     this->jobbuff->rSize = 0;
     this->jobbuff->dirtysize = 0;
     memcpy(this->jobbuff->buf, backup, backuplen);
     
-    zfree(backup);
+    free(backup);
     redisLog(REDIS_WARNING, "joblist resize ridx complete ok, %d, %d", this->jobbuff->wSize, this->jobbuff->rSize);
     
     this->resize = 0;
@@ -113,43 +113,54 @@ void incJoblistRsize(JobList* this, int inc)
     this->jobbuff->rSize += (inc + JOBLEN_SIZE);
 }
 
-static int _initJobBuff(JobList* this, int listsize, const char* mmapFile)
+static int _initJobBuff(JobList* this, int listsize)
 {
-    if (mmapFile != NULL) { //mmap
-        int flags = O_RDWR | O_CREAT; 
-        int exist = access(mmapFile, F_OK) == 0; 
-        int filesize = listsize + sizeof(JobList);
-        int mmapFd = open(mmapFile, flags, S_IRUSR | S_IWUSR);
+    NEXT_POT(listsize); 
+    int wsize = this->jobbuff == NULL ? 0 : this->jobbuff->wSize;
+    int rsize = this->jobbuff == NULL ? 0 : this->jobbuff->rSize;
+    int dirtysize = this->jobbuff == NULL ? 0 : this->jobbuff->dirtysize;
+    int buffsize = listsize + sizeof(JobBuff);
+
+    if (this->mmapFile != NULL) { //mmap
+        int existFile = access(this->mmapFile, F_OK) == 0; 
+        int mmapFd = open(this->mmapFile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
         assert(mmapFd > 0);
-        if (exist) {
+        if (existFile) {
             struct stat s;
-            stat(mmapFile, &s);
-            filesize = s.st_size > filesize ? s.st_size : filesize;
+            stat(this->mmapFile, &s);
+            if (this->jobbuff != NULL) {
+                munmap(this->jobbuff, s.st_size);
+            }
+            buffsize = s.st_size > buffsize ? s.st_size : buffsize;
         }
-        ftruncate(mmapFd, filesize);
-        this->jobbuff = (JobBuff*)mmap(NULL, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, mmapFd, 0);
-        if (!exist) {
-            this->jobbuff->rSize = this->jobbuff->wSize = 0;
-            this->jobbuff->dirtysize = 0;
-        }
+        ftruncate(mmapFd, buffsize);
+        this->jobbuff = (JobBuff*)mmap(NULL, buffsize, PROT_READ | PROT_WRITE, MAP_SHARED, mmapFd, 0); 
         close(mmapFd);
-        this->listsize = filesize - sizeof(JobList);
     
-    } else { //malloc
-    
+    } else { //malloc 
+        if (this->jobbuff != NULL) {
+            free(this->jobbuff);
+        }
+        this->jobbuff = (JobBuff*)malloc(listsize + sizeof(JobBuff));
     }
+    this->jobbuff->rSize = rsize;
+    this->jobbuff->wSize = wsize;
+    this->jobbuff->dirtysize = dirtysize;
+    this->listsize = buffsize - sizeof(JobBuff);
     this->listsizeMask = this->listsize - 1;
     return JOBLIST_RET_SUCCESS;
 }
 
 JobList* initJoblist(int maxBufSize, int listsize, const char* mmapFile)
 {
-    NEXT_POT(listsize); 
-    JobList* this = zmalloc(sizeof(JobList));
-    _initJobBuff(this, listsize, mmapFile);
+    JobList* this = malloc(sizeof(JobList));
     this->maxBufSize = maxBufSize;
     this->resize = 0;
     this->mmapFile = mmapFile;
+    this->jobbuff = NULL;
+    this->listsize = 0;
+    this->listsizeMask = 0;
+    _initJobBuff(this, listsize);
     redisLog(REDIS_WARNING, "joblist wSize:%d\t rSize:%d\t listsize:%d resize:%d dirtysize:%d", this->jobbuff->wSize, this->jobbuff->rSize, this->listsize, this->resize, this->jobbuff->dirtysize);
     return this;
 }
