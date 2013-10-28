@@ -176,7 +176,7 @@ static int _backJobListWsize(JobList* this, int widx)
 static int _backJobListRsize(JobList* this, int ridx)
 {
     if (ridx + this->maxBufSize > this->listsize) {
-        while (this->jobbuff->wSize == this->jobbuff->rSize) {
+        while (_isJobListEmpty(this)) {
             usleep(1000);
         }
         assert(this->jobbuff->dirtysize == this->listsize - ridx);
