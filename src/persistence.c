@@ -176,8 +176,8 @@ void persistenceInfo(int* untreatedSize, int* sleepSum, unsigned long long * wSi
 {
     *untreatedSize = pmgr != NULL ? pmgr->joblist->jobbuff->wSize - pmgr->joblist->jobbuff->rSize : -1;
     *sleepSum = pmgr != NULL ? pmgr->sleepSum : -1;
-    *wSize = pmgr->joblist->jobbuff->wSize;
-    *rSize = pmgr->joblist->jobbuff->rSize;
+    *wSize = pmgr != NULL ? pmgr->joblist->jobbuff->wSize : -1;
+    *rSize = pmgr != NULL ? pmgr->joblist->jobbuff->rSize : -1;
 }
 
 static void _wait(void)
