@@ -8,8 +8,6 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-#define FILE_MODE (S_IRUSR | S_IWUSR)
-
 static int _resizeJobListStart(JobList* this);
 static int _initJobBuff(JobList* this, int listsize, const char* mmapFile);
 static int _resizeJobListEnd(JobList* this);
@@ -117,25 +115,30 @@ void incJoblistRsize(JobList* this, int inc)
 
 static int _initJobBuff(JobList* this, int listsize, const char* mmapFile)
 {
-    int flags = O_RDWR | O_CREAT; 
-    int exist = access(mmapFile, F_OK) == 0; 
-    int filesize = listsize + sizeof(JobList);
-    int mmapFd = open(mmapFile, flags, FILE_MODE);
-    assert(mmapFd > 0);
-    if (exist) {
-        struct stat s;
-        stat(mmapFile, &s);
-        filesize = s.st_size > filesize ? s.st_size : filesize;
+    if (mmapFile != NULL) { //mmap
+        int flags = O_RDWR | O_CREAT; 
+        int exist = access(mmapFile, F_OK) == 0; 
+        int filesize = listsize + sizeof(JobList);
+        int mmapFd = open(mmapFile, flags, S_IRUSR | S_IWUSR);
+        assert(mmapFd > 0);
+        if (exist) {
+            struct stat s;
+            stat(mmapFile, &s);
+            filesize = s.st_size > filesize ? s.st_size : filesize;
+        }
+        ftruncate(mmapFd, filesize);
+        this->jobbuff = (JobBuff*)mmap(NULL, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, mmapFd, 0);
+        if (!exist) {
+            this->jobbuff->rSize = this->jobbuff->wSize = 0;
+            this->jobbuff->dirtysize = 0;
+        }
+        close(mmapFd);
+        this->listsize = filesize - sizeof(JobList);
+    
+    } else { //malloc
+    
     }
-    ftruncate(mmapFd, filesize);
-    this->jobbuff = (JobBuff*)mmap(NULL, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, mmapFd, 0);
-    if (!exist) {
-        this->jobbuff->rSize = this->jobbuff->wSize = 0;
-        this->jobbuff->dirtysize = 0;
-    }
-    this->listsize = filesize - sizeof(JobList);
     this->listsizeMask = this->listsize - 1;
-    close(mmapFd);
     return JOBLIST_RET_SUCCESS;
 }
 
