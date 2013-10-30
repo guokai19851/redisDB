@@ -49,7 +49,6 @@
 #include <math.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
-#include "mysqlDB.h"
 #include "persistence.h"
 
 /* Our shared "common" objects */
@@ -67,6 +66,9 @@ double R_Zero, R_PosInf, R_NegInf, R_Nan;
 /* Global vars */
 struct redisServer server; /* server global state */
 struct redisCommand* commandTable;
+
+PMgr* pmgr;
+PMgr* lockPmgr;
 
 /* Our command table.
  *
@@ -1632,9 +1634,11 @@ void initServer()
             redisLog(REDIS_WARNING, "initDB error %d", ret);
             exit(1);
         }
-        ret = initPersistence(MAX_PERSISTENCE_BUF_SIZE * 2, server.persistenceMmapFile, server.writeThreadNum, server.mysqlHost, server.mysqlPort, server.mysqlUser, server.mysqlPwd, server.mysqlDBName); 
-        if (ret != PERSISTENCE_RET_INIT_SUCCESS) {
-            redisLog(REDIS_WARNING, "initPersistence error %d", ret);
+        ret = initDBLockDict();
+        pmgr = initPersistence(MAX_PERSISTENCE_BUF_SIZE * 1000, server.persistenceMmapFile, server.writeThreadNum, server.mysqlHost, server.mysqlPort, server.mysqlUser, server.mysqlPwd, server.mysqlDBName); 
+        lockPmgr = initPersistence(MAX_PERSISTENCE_BUF_SIZE * 1000, server.lockPersistenceMmapFile, server.writeThreadNum, server.mysqlHost, server.mysqlPort, server.mysqlUser, server.mysqlPwd, server.mysqlDBName);
+        if (pmgr == NULL) {
+            redisLog(REDIS_WARNING, "initPersistence error");
             exit(1);
         }
     }
@@ -1888,7 +1892,11 @@ void call(redisClient* c, int flags)
         redisOpArrayFree(&server.also_propagate);
     }
     server.stat_numcommands++;
-    addPersistenceJob(persistenceBuf, persistenceLen);
+    if (!needLockTable(c->cmd->proc)) {
+        addPersistenceJob(persistenceBuf, persistenceLen, pmgr);
+    } else {
+        addPersistenceJob(persistenceBuf, persistenceLen, lockPmgr);
+    }
 }
 
 /* If this function gets called we already read a whole
@@ -2406,7 +2414,12 @@ sds genRedisInfoString(char* section)
         int sleepSum = 0;
         unsigned long long wsize = 0;
         unsigned long long rsize = 0;
-        persistenceInfo(&untreatedSize, &sleepSum, &wsize, &rsize);
+        int singleuntreatedSize = 0;
+        int singlesleepSum = 0;
+        unsigned long long singlewsize = 0;
+        unsigned long long singlersize = 0;
+        persistenceInfo(&untreatedSize, &sleepSum, &wsize, &rsize, pmgr);
+        persistenceInfo(&singleuntreatedSize, &singlesleepSum, &singlewsize, &singlersize, lockPmgr);
         info = sdscatprintf(info,
                             "# Stats\r\n"
                             "total_connections_received:%lld\r\n"
@@ -2420,6 +2433,10 @@ sds genRedisInfoString(char* section)
                             "pubsub_channels:%ld\r\n"
                             "pubsub_patterns:%lu\r\n"
                             "latest_fork_usec:%lld\r\n"
+                            "lock persistence sleep sum :%d\r\n"
+                            "lock persistence untreated size :%d\r\n"
+                            "lock persistence wsize :%lld\r\n"
+                            "lock persistence rsize :%lld\r\n"
                             "persistence sleep sum :%d\r\n"
                             "persistence untreated size :%d\r\n"
                             "persistence wsize :%lld\r\n"
@@ -2435,6 +2452,10 @@ sds genRedisInfoString(char* section)
                             dictSize(server.pubsub_channels),
                             listLength(server.pubsub_patterns),
                             server.stat_fork_time,
+                            singlesleepSum,
+                            singleuntreatedSize,
+                            singlewsize,
+                            singlersize,
                             sleepSum,
                             untreatedSize,
                             wsize, 

@@ -116,11 +116,7 @@ void incJoblistRsize(JobList* this, int inc)
 static int _initJobBuff(JobList* this, int listsize)
 {
     NEXT_POT(listsize); 
-    int wsize = this->jobbuff == NULL ? 0 : this->jobbuff->wSize;
-    int rsize = this->jobbuff == NULL ? 0 : this->jobbuff->rSize;
-    int dirtysize = this->jobbuff == NULL ? 0 : this->jobbuff->dirtysize;
     int buffsize = listsize + sizeof(JobBuff);
-
     if (this->mmapFile != NULL) { //mmap
         int existFile = access(this->mmapFile, F_OK) == 0; 
         int mmapFd = open(this->mmapFile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
@@ -135,6 +131,9 @@ static int _initJobBuff(JobList* this, int listsize)
         }
         ftruncate(mmapFd, buffsize);
         this->jobbuff = (JobBuff*)mmap(NULL, buffsize, PROT_READ | PROT_WRITE, MAP_SHARED, mmapFd, 0); 
+        if (!existFile) {
+            this->jobbuff->dirtysize = this->jobbuff->wSize = this->jobbuff->rSize = 0;
+        }
         close(mmapFd);
     
     } else { //malloc 
@@ -142,10 +141,8 @@ static int _initJobBuff(JobList* this, int listsize)
             free(this->jobbuff);
         }
         this->jobbuff = (JobBuff*)malloc(listsize + sizeof(JobBuff));
+        this->jobbuff->dirtysize = this->jobbuff->wSize = this->jobbuff->rSize = 0;
     }
-    this->jobbuff->rSize = rsize;
-    this->jobbuff->wSize = wsize;
-    this->jobbuff->dirtysize = dirtysize;
     this->listsize = buffsize - sizeof(JobBuff);
     this->listsizeMask = this->listsize - 1;
     return JOBLIST_RET_SUCCESS;

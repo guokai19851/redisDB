@@ -30,6 +30,7 @@
 
 
 #include "redis.h"
+#include <assert.h>
 
 /*-----------------------------------------------------------------------------
  * Config file parsing
@@ -469,6 +470,8 @@ void loadServerConfigFromString(char* config)
             server.mysqlPort = atoi(argv[1]);
         } else if (!strcasecmp(argv[0], "persistence_mmap_file")) {
             server.persistenceMmapFile = zstrdup(argv[1]);
+        } else if (!strcasecmp(argv[0], "persistence_mmap_file_lock")) {
+            server.lockPersistenceMmapFile = zstrdup(argv[1]);
         } else if (!strcasecmp(argv[0], "write_thread_num")) {
             server.writeThreadNum = atoi(argv[1]);
         } else {
@@ -476,6 +479,9 @@ void loadServerConfigFromString(char* config)
             goto loaderr;
         }
         sdsfreesplitres(argv, argc);
+    }
+    if (server.persistenceMmapFile != NULL && server.lockPersistenceMmapFile != NULL) {
+        assert(strcmp(server.persistenceMmapFile, server.lockPersistenceMmapFile) != 0);
     }
     sdsfreesplitres(lines, totlines);
     return;

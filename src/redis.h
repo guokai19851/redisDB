@@ -689,6 +689,8 @@ struct redisServer {
     char* mysqlDBName;
     int mysqlPort;
     char* persistenceMmapFile;
+    char* lockPersistenceMmapFile;
+    int writeThreadNum;
 };
 
 typedef struct pubsubPattern {

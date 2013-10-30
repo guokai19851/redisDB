@@ -1,7 +1,5 @@
-#include "mysqlDB.h"
 #include "persistence.h"
 #include "zmalloc.h"
-#include "joblist.h"
 
 #include <assert.h>
 #include <unistd.h>
@@ -16,86 +14,73 @@ static void* _persistenceMain(void* arg);
 static void* _writeDBPorcess(void* arg);
 static int _packCmd(char* wbuf, redisClient* c);
 static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** argv, redisCommandProc** procPtr);
-static void _wait(void);
-static int _createMainWorkerProcess(void);
-static int _createWriteWorkerProcess(int num);
-
-typedef struct _PMgr {
-    JobList* joblist;
-    int sleepSum;
-    int workerNum;
-} PMgr;
-
-typedef struct _WriteWorker {
-    int buflen;
-    DBConn* dbConn;
-    char buf[];
-} WriteWorker;
-
-PMgr* pmgr;
-WriteWorker** writeWorkers;
+static void _wait(PMgr* this);
+static int _createMainWorkerProcess(PMgr* this);
+static int _createWriteWorkerProcess(int num, PMgr* this);
 
 static void* _persistenceMain(void* arg)
 {
+    PMgr* this = (PMgr*)arg;
     int currWorkerIdx = 0;
     while (1) {
         char* recv;
-        int len = popJobList(pmgr->joblist, &recv);
+        int len = popJobList(this->joblist, &recv);
         if (len <= 0) {
-            _wait();
+            _wait(this);
         } else {
-            while (writeWorkers[currWorkerIdx]->buflen > 0) {
-                if (currWorkerIdx++ == pmgr->workerNum - 1) {
+            while (this->writeWorkers[currWorkerIdx]->buflen > 0) {
+                if (currWorkerIdx++ == this->workerNum - 1) {
                     currWorkerIdx = 0;
-                    _wait();
+                    _wait(this);
                 }
             }
-            memcpy(writeWorkers[currWorkerIdx]->buf, recv, len);
-            writeWorkers[currWorkerIdx]->buflen = len;
-            incJoblistRsize(pmgr->joblist, len);
+            memcpy(this->writeWorkers[currWorkerIdx]->buf, recv, len);
+            this->writeWorkers[currWorkerIdx]->buflen = len;
+            incJoblistRsize(this->joblist, len);
         }
     }
     return NULL;
 }
 
-int initPersistence(int joblistsize, const char* mmapFile, int threadNum, const char* host, const int port, const char* user, const char* pwd, const char* dbName)
+PMgr* initPersistence(int joblistsize, const char* mmapFile, int threadNum, const char* host, const int port, const char* user, const char* pwd, const char* dbName)
 {
-    pmgr = (PMgr*)zmalloc(sizeof(PMgr));
-    pmgr->workerNum = threadNum;
-    pmgr->sleepSum = 0;
-    pmgr->joblist = initJoblist(MAX_PERSISTENCE_BUF_SIZE, joblistsize, mmapFile);
-    assert(pmgr->joblist != NULL);
-    writeWorkers = (WriteWorker**)zmalloc(sizeof(WriteWorker*) * threadNum);
+    PMgr* this = (PMgr*)zmalloc(sizeof(PMgr));
+    this->workerNum = threadNum;
+    this->sleepSum = 0;
+    this->joblist = initJoblist(MAX_PERSISTENCE_BUF_SIZE, joblistsize, mmapFile);
+    assert(this->joblist != NULL);
+    this->writeWorkers = (WriteWorker**)zmalloc(sizeof(WriteWorker*) * threadNum);
     int i = 0;
     for (; i < threadNum; i++) {
-        writeWorkers[i] = (WriteWorker*)zmalloc(sizeof(WriteWorker) + MAX_PERSISTENCE_BUF_SIZE);
-        writeWorkers[i]->dbConn = initDB(host, port, user, pwd, dbName);
-        writeWorkers[i]->buflen = 0;
+        this->writeWorkers[i] = (WriteWorker*)zmalloc(sizeof(WriteWorker) + MAX_PERSISTENCE_BUF_SIZE);
+        this->writeWorkers[i]->dbConn = initDB(host, port, user, pwd, dbName);
+        this->writeWorkers[i]->buflen = 0;
     }
-    int ret = _createMainWorkerProcess();
+    int ret = _createMainWorkerProcess(this);
     assert(ret == PERSISTENCE_RET_SUCCESS);
     for (i = 0; i < threadNum; i++) {
-        ret = _createWriteWorkerProcess(i);
+        ret = _createWriteWorkerProcess(i, this);
         assert(ret == PERSISTENCE_RET_SUCCESS);
     }
-    return PERSISTENCE_RET_SUCCESS;
+    return this;
 }
 
-static int _createMainWorkerProcess(void)
+static int _createMainWorkerProcess(PMgr* this)
 {
     pthread_t thread;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_create(&thread, &attr, _persistenceMain, NULL);
+    pthread_create(&thread, &attr, _persistenceMain, this);
     return PERSISTENCE_RET_SUCCESS; 
 }
 
-static int _createWriteWorkerProcess(int num)
+static int _createWriteWorkerProcess(int num, PMgr* this)
 {
     pthread_t thread;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_create(&thread, &attr, _writeDBPorcess, writeWorkers[num]);
+    this->writeWorkers[num]->pmgr = this;
+    pthread_create(&thread, &attr, _writeDBPorcess, this->writeWorkers[num]);
     return PERSISTENCE_RET_SUCCESS;  
 }
 
@@ -127,9 +112,9 @@ int packPersistenceJob(redisClient* c, char* wbuf)
     return PERSISTENCE_RET_NOTFOUNDCMD;
 }
 
-int addPersistenceJob(const char* wbuf, int len)
+int addPersistenceJob(const char* wbuf, int len, PMgr* this)
 {
-    return len > 0 ? pushJobList(pmgr->joblist, wbuf, len) : JOBLIST_RET_SIZE_OVERFLOW;
+    return len > 0 ? pushJobList(this->joblist, wbuf, len) : JOBLIST_RET_SIZE_OVERFLOW;
 }
 
 static int _packCmd(char* wbuf, redisClient* c)
@@ -172,29 +157,30 @@ static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** cmdArgvs, redisCo
     return i;
 }
 
-void persistenceInfo(int* untreatedSize, int* sleepSum, unsigned long long * wSize, unsigned long long * rSize)
+void persistenceInfo(int* untreatedSize, int* sleepSum, unsigned long long * wSize, unsigned long long * rSize, PMgr* this)
 {
-    *untreatedSize = pmgr != NULL ? pmgr->joblist->jobbuff->wSize - pmgr->joblist->jobbuff->rSize : -1;
-    *sleepSum = pmgr != NULL ? pmgr->sleepSum : -1;
-    *wSize = pmgr != NULL ? pmgr->joblist->jobbuff->wSize : -1;
-    *rSize = pmgr != NULL ? pmgr->joblist->jobbuff->rSize : -1;
+    *untreatedSize = this != NULL ? this->joblist->jobbuff->wSize - this->joblist->jobbuff->rSize : -1;
+    *sleepSum = this != NULL ? this->sleepSum : -1;
+    *wSize = this != NULL ? this->joblist->jobbuff->wSize : -1;
+    *rSize = this != NULL ? this->joblist->jobbuff->rSize : -1;
 }
 
-static void _wait(void)
+static void _wait(PMgr* this)
 {
     usleep(1000);
-    pmgr->sleepSum += 1;
-    if (pmgr->sleepSum >= 2147483640) {
-        pmgr->sleepSum = 0;
+    this->sleepSum += 1;
+    if (this->sleepSum >= 2147483640) {
+        this->sleepSum = 0;
     }
 }
 
 static void* _writeDBPorcess(void* arg)
 {
     WriteWorker* worker = (WriteWorker*)arg;
+    PMgr* this = worker->pmgr;
     while (1) {
         if (worker->buflen == 0) {
-            _wait();
+            _wait(this);
         } else {
             CmdArgv* cmdArgvs[MAX_CMD_ARGV];
             redisCommandProc* proc;
