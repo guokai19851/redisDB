@@ -470,8 +470,7 @@ void loadServerConfigFromString(char* config)
             server.mysqlPort = atoi(argv[1]);
         } else if (!strcasecmp(argv[0], "persistence_mmap_file")) {
             server.persistenceMmapFile = zstrdup(argv[1]);
-        } else if (!strcasecmp(argv[0], "persistence_mmap_file_lock")) {
-            server.lockPersistenceMmapFile = zstrdup(argv[1]);
+            server.lockPersistenceMmapFile = strcat(zstrdup(argv[1]), "_lock");
         } else if (!strcasecmp(argv[0], "write_thread_num")) {
             server.writeThreadNum = atoi(argv[1]);
         } else {
