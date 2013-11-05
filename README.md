@@ -6,12 +6,12 @@ redisDB
 redis运行时连接数据库 cache失效时同步读mysql, 数据修改时候通过消息队列通知DB线程写mysql
 reids.conf增加几个配置选项
 mysql_host  
-mysql_port 
-mysql_user 
-mysql_pwd
-mysql_dbname
+mysql_port  
+mysql_user  
+mysql_pwd  
+mysql_dbname  
 persistence_mmap_file:  消息列队指定的mmap映射文件  
-write_thread_num 写DB线程数 
+write_thread_num 写DB线程数  
 
 对key的命名有规范 "tablename_ID(int)"形式, 如果仅仅是 "tablename" 则系统解析的时候ID默认为0
 例如 “user_1” 系统会自动对应"user"表的ID为1的行
