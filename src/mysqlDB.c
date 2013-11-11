@@ -21,6 +21,7 @@ static int _connDB(MYSQL* conn, const char* host, const int port, const char* us
 static int _pingDB(MYSQL* conn);
 static int _lockTable(const char* table);
 static int _unlockTable(const char* table);
+static int _cmdArgv2int(CmdArgv* argv);
 
 /* 同步读 */
 static int _selectStrFromDB(redisClient* c);
@@ -32,8 +33,8 @@ static int _clearExpireStrToDB(const char* table, const char* ID);
 /* 异步写 */
 static int _popListToDB(const char* table, const char* ID, int where, DBConn* dbConn);
 static int _pushListToDB(const char* table, const char* ID, CmdArgv* val, int where, int createNotExist, DBConn* dbConn);
-static int _writeStrToDB(const char* table, const char* ID, CmdArgv* val, DBConn* dbConn);
-static int _expireat(const char* table, const char* ID, CmdArgv* expireat, DBConn* dbConn);
+static int _writeStrToDB(const char* table, const char* ID, CmdArgv* val, int expireat, DBConn* dbConn);
+static int _expireat(const char* table, const char* ID, int expireat, DBConn* dbConn);
 static int _zaddToDB(const char* table, const char* ID, CmdArgv* score, CmdArgv* member, int incr, DBConn* dbConn);
 static int _incrToDB(CmdArgv* key, CmdArgv* incr, DBConn* dbConn);
 static int _zremrangeToDB(const char* table, const char* ID, CmdArgv* start, CmdArgv* stop, int rankOrScore, DBConn* dbConn);
@@ -115,7 +116,7 @@ static int _parseKey(const char* key, int keyLen, char* table, char* ID)
     return j;
 }
 
-int writeToDB(int argc, CmdArgv** cmdArgvs, redisCommandProc* proc, DBConn* dbConn)
+int writeToDB(int argc, CmdArgv** cmdArgvs, redisCommandProc* proc, DBConn* dbConn, int time)
 {
     _pingDB(dbConn->conn);
     int ret = 0;
@@ -128,22 +129,26 @@ int writeToDB(int argc, CmdArgv** cmdArgvs, redisCommandProc* proc, DBConn* dbCo
         _lockTable(table);
     }
     _begin(dbConn);
-    if (proc == setCommand && argc == 2) {
-        ret = _writeStrToDB(table, ID, cmdArgvs[1], dbConn);
+    if ((proc == setCommand || proc == setnxCommand) && argc == 2) {
+        ret = _writeStrToDB(table, ID, cmdArgvs[1], 0, dbConn);
+    
+    } else if ((proc == setexCommand || proc == psetexCommand) && argc == 3) {
+        ret = _writeStrToDB(table, ID, cmdArgvs[2], time + _cmdArgv2int(cmdArgvs[1]), dbConn);
 
     } else if (proc == msetCommand) {
         for (i = 0; i < argc; i += 2) {
             char table[16] = {'\0'};
             char ID[16] = {'\0'};
             _parseKey(cmdArgvs[i]->buf, cmdArgvs[i]->len, table, ID);
-            ret = _writeStrToDB(table, ID, cmdArgvs[i + 1], dbConn);
+            ret = _writeStrToDB(table, ID, cmdArgvs[i + 1], 0, dbConn);
             if (ret != 0) {
                 break;
             }
         }
 
-    } else if (proc == expireatCommand) {
-        ret = _expireat(table, ID, cmdArgvs[1], dbConn);
+    } else if (proc == expireatCommand || proc == expireCommand) {
+        int expireat = (proc == expireatCommand) ? _cmdArgv2int(cmdArgvs[1]) : time + _cmdArgv2int(cmdArgvs[1]);
+        ret = _expireat(table, ID, expireat, dbConn);
 
     } else if (proc == lpushCommand || proc == rpushCommand || proc == lpushxCommand || proc == rpushxCommand) {
         int where = (proc == lpushCommand || proc == lpushxCommand) ? REDIS_HEAD : REDIS_TAIL;
@@ -210,7 +215,12 @@ int readFromDB(redisClient* c)
     if (keylen >= MAX_KEY_LEN) {
         return DB_RET_KEY_TOO_MANY;
     }
-    if (c->cmd->proc == getCommand) {
+    if (c->cmd->proc == getCommand 
+        || c->cmd->proc == setCommand 
+        || c->cmd->proc == setnxCommand
+        || c->cmd->proc == psetexCommand
+        || c->cmd->proc == setexCommand
+    ) {
         return _selectStrFromDB(c);
 
     } else if (c->cmd->proc == lpopCommand
@@ -303,37 +313,50 @@ static int _selectStrFromDB(redisClient* c)
     }
 }
 
-static int _writeStrToDB(const char* table, const char* ID, CmdArgv* val, DBConn* dbConn)
+static int _writeStrToDB(const char* table, const char* ID, CmdArgv* val, int expireat, DBConn* dbConn)
 {
     MYSQL* conn = dbConn->conn;
     char* sql = dbConn->sqlbuff;
     char* end = _strmov(sql, "INSERT INTO `");
+    char expireatStr[12] = {'\0'};
+    sprintf(expireatStr, "%d", expireat);
     end += mysql_real_escape_string(conn, end, table, strlen(table));
     end = _strmov(end, "` set `ID` = '");
     end += mysql_real_escape_string(conn, end, ID, strlen(ID));
     end = _strmov(end, "' , `val` = '");
     end += mysql_real_escape_string(conn, end, val->buf, val->len);
+    if (expireat != 0) {
+        end = _strmov(end, "', `expireat` = '");
+        end += mysql_real_escape_string(conn, end, expireatStr, strlen(expireatStr));
+    }
     end = _strmov(end, "' ON DUPLICATE KEY UPDATE `val` = '");
     end += mysql_real_escape_string(conn, end, val->buf, val->len);
+    if (expireat != 0) {
+        end = _strmov(end, "', `expireat` = '");
+        end += mysql_real_escape_string(conn, end, expireatStr, strlen(expireatStr));
+    }
     *end++ = '\'';
     *end++ = '\0';
     int ret = _query(sql, conn);
     if (ret == DB_RET_TABLE_NOTEXIST) {
         _createStrTable(table, dbConn);
-        return _writeStrToDB(table, ID, val, dbConn);
+        return _writeStrToDB(table, ID, val, expireat, dbConn);
     }
     return ret;
 }
 
-static int _expireat(const char* table, const char* ID, CmdArgv* expireat, DBConn* dbConn)
+static int _expireat(const char* table, const char* ID, int expireat, DBConn* dbConn)
 {
     MYSQL* conn = dbConn->conn;
+
+    char expireatStr[12] = {'\0'};
+    sprintf(expireatStr, "%d", expireat);
 
     char* sql = dbConn->sqlbuff;
     char* end = _strmov(sql, "UPDATE `");
     end += mysql_real_escape_string(conn, end, table, strlen(table));
     end = _strmov(end, "` set `expireat` = '");
-    end += mysql_real_escape_string(conn, end, expireat->buf, expireat->len);
+    end += mysql_real_escape_string(conn, end, expireatStr, strlen(expireatStr));
     end = _strmov(end, "' WHERE `ID` = '");
     end += mysql_real_escape_string(conn, end, ID, strlen(ID));
     end = _strmov(end, "' LIMIT 1");
@@ -626,7 +649,7 @@ static int _zremrangeToDB(const char* table, const char* ID, CmdArgv* start, Cmd
 
     if (rankOrScore) {
         end = _strmov(end, "' AND `_PID` IN (");
-        int limitNum = atoi(stop->buf) - atoi(start->buf) + 1;
+        int limitNum = _cmdArgv2int(stop) - _cmdArgv2int(start) + 1;
         if (limitNum <= 0) {//暂不支持zremrangebyrank tzset 0 -1 这种形式
             return DB_RET_NOT_SUPPORT;
         }
@@ -785,12 +808,43 @@ int initDBLockDict(void)
 int needLockTable(redisCommandProc* proc)
 {
     if (proc == setCommand
+        || proc == setnxCommand
         || proc == msetCommand
         || proc == expireatCommand
+        || proc == expireCommand
         || proc == incrCommand
         || proc == incrbyCommand
        ) {
         return 0;
     }
     return 1;
+}
+
+int isPersistenceCmd(redisClient* c)
+{
+    int argc = c->argc - 1;
+    return ((c->cmd->proc == setCommand || c->cmd->proc == setnxCommand) && argc == 2)
+        || ((c->cmd->proc == setexCommand || c->cmd->proc == psetexCommand) && argc == 3)
+        || (c->cmd->proc == msetCommand && argc % 2 == 0)
+        || ((c->cmd->proc == expireatCommand || c->cmd->proc == expireCommand) && argc == 2)
+        || (c->cmd->proc == lpopCommand && argc == 1)
+        || (c->cmd->proc == rpopCommand && argc == 1)
+        || (c->cmd->proc == lpushxCommand && argc == 2)
+        || (c->cmd->proc == rpushxCommand && argc == 2)
+        || (c->cmd->proc == lpushCommand && argc >= 2)
+        || (c->cmd->proc == rpushCommand && argc >= 2)
+        || (c->cmd->proc == zaddCommand && argc % 2 == 1)
+        || (c->cmd->proc == incrCommand && argc == 1)
+        || (c->cmd->proc == incrbyCommand && argc == 2)
+        || (c->cmd->proc == zincrbyCommand && argc == 3)
+        || (c->cmd->proc == zremCommand && argc >= 2)
+        || (c->cmd->proc == zremrangebyscoreCommand && argc == 3)
+        || (c->cmd->proc == zremrangebyrankCommand && argc == 3);
+}
+
+static int _cmdArgv2int(CmdArgv* argv)
+{
+    char tmp[16] = {'\0'};
+    memcpy(tmp, argv->buf, argv->len);
+    return atoi(tmp);
 }

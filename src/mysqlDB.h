@@ -29,11 +29,12 @@ typedef struct _DBConn {
 } DBConn;
 
 int readFromDB(redisClient* c);
-int writeToDB(int argc, CmdArgv** cmdArgvs, redisCommandProc* proc, DBConn* dbConn);
+int writeToDB(int argc, CmdArgv** cmdArgvs, redisCommandProc* proc, DBConn* dbConn, int time);
 DBConn* initDB(const char* host, const int port, const char* user, const char* pwd, const char* dbName);
 int isDBError(int ret);
 int initReadDB(const char* host, const int port, const char* user, const char* pwd, const char* dbName);
 int initDBLockDict(void);
 int needLockTable(redisCommandProc* proc);
+int isPersistenceCmd(redisClient* c);
 
 #endif

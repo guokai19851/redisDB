@@ -13,7 +13,7 @@
 static void* _persistenceMain(void* arg);
 static void* _writeDBPorcess(void* arg);
 static int _packCmd(char* wbuf, redisClient* c);
-static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** argv, redisCommandProc** procPtr);
+static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** cmdArgvs, redisCommandProc** procPtr, int* time);
 static void _wait(PMgr* this);
 static int _createMainWorkerProcess(PMgr* this);
 static int _createWriteWorkerProcess(int num, PMgr* this);
@@ -89,27 +89,7 @@ int packPersistenceJob(redisClient* c, char* wbuf)
     if (c->argc >= MAX_CMD_ARGV) {
         return PERSISTENCE_RET_ARGC_OVERFLOW;
     }
-    int argc = c->argc - 1;
-    if ((c->cmd->proc == setCommand && argc == 2)
-        || (c->cmd->proc == msetCommand && argc % 2 == 0)
-        || (c->cmd->proc == expireatCommand && argc == 2)
-        || (c->cmd->proc == lpopCommand && argc == 1)
-        || (c->cmd->proc == rpopCommand && argc == 1)
-        || (c->cmd->proc == lpushxCommand && argc == 2)
-        || (c->cmd->proc == rpushxCommand && argc == 2)
-        || (c->cmd->proc == lpushCommand && argc >= 2)
-        || (c->cmd->proc == rpushCommand && argc >= 2)
-        || (c->cmd->proc == zaddCommand && argc % 2 == 1)
-        || (c->cmd->proc == incrCommand && argc == 1)
-        || (c->cmd->proc == incrbyCommand && argc == 2)
-        || (c->cmd->proc == zincrbyCommand && argc == 3)
-        || (c->cmd->proc == zremCommand && argc >= 2)
-        || (c->cmd->proc == zremrangebyscoreCommand && argc == 3)
-        || (c->cmd->proc == zremrangebyrankCommand && argc == 3)
-       ) {
-        return _packCmd(wbuf, c);
-    }
-    return PERSISTENCE_RET_NOTFOUNDCMD;
+    return isPersistenceCmd(c) ? _packCmd(wbuf, c) : PERSISTENCE_RET_NOTFOUNDCMD;
 }
 
 int addPersistenceJob(const char* wbuf, int len, PMgr* this)
@@ -127,7 +107,11 @@ static int _packCmd(char* wbuf, redisClient* c)
     int offset = 0;
     char* end = wbuf;
     redisLog(REDIS_DEBUG, "packCmd proc %p ", c->cmd->proc);
-    memcpy(end, &c->cmd->proc, sizeof(redisCommandProc*));
+
+    int now = (int)time(NULL);
+    *(int*)end = now;
+    offset += sizeof(int);
+    memcpy(end + offset, &c->cmd->proc, sizeof(redisCommandProc*));
     offset += sizeof(redisCommandProc*);
     for (; n < c->argc; n++) {
         end = wbuf + offset;
@@ -142,10 +126,12 @@ static int _packCmd(char* wbuf, redisClient* c)
     return offset;
 }
 
-static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** cmdArgvs, redisCommandProc** procPtr)
+static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** cmdArgvs, redisCommandProc** procPtr, int* time)
 {
     const char* end = rbuf;
     int i = 0;
+    *time = *(int*)end;
+    end += sizeof(int);
     memcpy(procPtr, end, sizeof(redisCommandProc*));
     redisLog(REDIS_DEBUG, "unpackCmd proc %p ", *procPtr);
     end += sizeof(redisCommandProc*);
@@ -184,9 +170,10 @@ static void* _writeDBPorcess(void* arg)
         } else {
             CmdArgv* cmdArgvs[MAX_CMD_ARGV];
             redisCommandProc* proc;
-            int argc = _unpackCmd(worker->buf, worker->buflen, cmdArgvs, &proc);
+            int time = 0;
+            int argc = _unpackCmd(worker->buf, worker->buflen, cmdArgvs, &proc, &time);
             assert(argc > 0);
-            writeToDB(argc, cmdArgvs, proc, worker->dbConn);
+            writeToDB(argc, cmdArgvs, proc, worker->dbConn, time);
             worker->buflen = 0;
         }
     }

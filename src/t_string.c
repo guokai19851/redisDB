@@ -81,6 +81,17 @@ void setGenericCommand(redisClient* c, int flags, robj* key, robj* val, robj* ex
         }
     }
 
+    if (lookupKey(c->db, key) == NULL) {
+        int ret = readFromDB(c);
+        if (ret == DB_RET_SUCCESS) {
+            setGenericCommand(c, flags, key, val, expire, unit, ok_reply, abort_reply);
+            return;
+        } else if (isDBError(ret)) {
+            addReply(c, shared.wrongtypeerr);
+            return;
+        }
+    }
+
     if ((flags & REDIS_SET_NX && lookupKeyWrite(c->db, key) != NULL) ||
         (flags & REDIS_SET_XX && lookupKeyWrite(c->db, key) == NULL)) {
         addReply(c, abort_reply ? abort_reply : shared.nullbulk);
