@@ -8,8 +8,8 @@
 #define LOCK_TABLE_NUM 2048
 #define LOCK_TABLE_NUM_MASK 2047
 
-DBConn* readConn;
-pthread_mutex_t lockTableDict[LOCK_TABLE_NUM];
+static DBConn* _readConn;
+static pthread_mutex_t _lockTableDict[LOCK_TABLE_NUM];
 
 static int _query(const char* sql, MYSQL* conn);
 static int _parseKey(const char* key, const int keyLen, char* table, char* ID);
@@ -46,8 +46,8 @@ static int _createIncrTable(DBConn* dbConn);
 
 int initReadDB(const char* host, const int port, const char* user, const char* pwd, const char* dbName)
 {
-    readConn = initDB(host, port, user, pwd, dbName);
-    return readConn != NULL ? DB_RET_SUCCESS : DB_RET_DBINITERROR;
+    _readConn = initDB(host, port, user, pwd, dbName);
+    return _readConn != NULL ? DB_RET_SUCCESS : DB_RET_DBINITERROR;
 }
 
 DBConn* initDB(const char* host, const int port, const char* user, const char* pwd, const char* dbName)
@@ -210,7 +210,7 @@ int writeToDB(int argc, CmdArgv** cmdArgvs, redisCommandProc* proc, DBConn* dbCo
 
 int readFromDB(redisClient* c)
 {
-    _pingDB(readConn->conn);
+    _pingDB(_readConn->conn);
     int keylen = strlen(c->argv[1]->ptr);
     if (keylen >= MAX_KEY_LEN) {
         return DB_RET_KEY_TOO_MANY;
@@ -273,12 +273,12 @@ static char* _strmov(char* dest, char* src)
 
 static int _selectStrFromDB(redisClient* c)
 {
-    MYSQL* conn = readConn->conn;
+    MYSQL* conn = _readConn->conn;
     char* key = c->argv[1]->ptr;
     char table[16] = {'\0'};
     char ID[16] = {'\0'};
     _parseKey(key, strlen(key), table, ID);
-    char* sql = readConn->sqlbuff;
+    char* sql = _readConn->sqlbuff;
     char* end = _strmov(sql, "SELECT `val`, `expireat` FROM `");
     end += mysql_real_escape_string(conn, end, table, strlen(table));
     end = _strmov(end, "` WHERE `ID` = '");
@@ -368,8 +368,8 @@ static int _expireat(const char* table, const char* ID, int expireat, DBConn* db
 
 static int _clearExpireStrToDB(const char* table, const char* ID)
 {
-    MYSQL* conn = readConn->conn;
-    char* sql = readConn->sqlbuff;
+    MYSQL* conn = _readConn->conn;
+    char* sql = _readConn->sqlbuff;
     char* end = _strmov(sql, "DELETE FROM `");
     end += mysql_real_escape_string(conn, end, table, strlen(table));
     end = _strmov(end, "` WHERE `ID` = '");
@@ -387,14 +387,16 @@ static int _pushListToDB(const char* table, const char* ID, CmdArgv* val, int wh
     char* sql = dbConn->sqlbuff;
     char* end = _strmov(sql, "SELECT ");
     if (where == REDIS_HEAD) {
-        end = _strmov(end, " (MIN(`order`) - 1) FROM `");
+        end = _strmov(end, " MIN(`order`) - 1 FROM `");
     } else if (where == REDIS_TAIL) {
-        end = _strmov(end, " (MAX(`order`) + 1) FROM `");
+        end = _strmov(end, " MAX(`order`) + 1 FROM `");
     } else {
         return DB_RET_LIST_NOT_WHERE;
     }
     end += mysql_real_escape_string(conn, end, table, strlen(table));
-    *end++ = '`';
+    end = _strmov(end, "` WHERE `ID` = '");
+    end += mysql_real_escape_string(conn, end, ID, strlen(ID));
+    *end++ = '\'';
     *end++ = '\0';
     int ret = _query(sql, conn);
     if (ret == DB_RET_TABLE_NOTEXIST) {
@@ -461,12 +463,12 @@ static int _popListToDB(const char* table, const char* ID, int where, DBConn* db
 
 static int _loadListFromDB(redisClient* c)
 {
-    MYSQL* conn = readConn->conn;
+    MYSQL* conn = _readConn->conn;
     char* key = c->argv[1]->ptr;
     char table[16] = {'\0'};
     char ID[16] = {'\0'};
     _parseKey(key, strlen(key), table, ID);
-    char* sql = readConn->sqlbuff;
+    char* sql = _readConn->sqlbuff;
     char* end = _strmov(sql, "SELECT `val` FROM `");
     end += mysql_real_escape_string(conn, end, table, strlen(table));
     end = _strmov(end, "` WHERE `ID` = '");
@@ -499,12 +501,12 @@ static int _loadListFromDB(redisClient* c)
 
 static int _loadZsetFromDB(redisClient* c)
 {
-    MYSQL* conn = readConn->conn;
+    MYSQL* conn = _readConn->conn;
     char* key = c->argv[1]->ptr;
     char table[16] = {'\0'};
     char ID[16] = {'\0'};
     _parseKey(key, strlen(key), table, ID);
-    char* sql = readConn->sqlbuff;
+    char* sql = _readConn->sqlbuff;
     char* end = _strmov(sql, "SELECT `member`, `score` FROM `");
     end += mysql_real_escape_string(conn, end, table, strlen(table));
     end = _strmov(end, "` WHERE `ID` = '");
@@ -583,9 +585,9 @@ static int _zaddToDB(const char* table, const char* ID, CmdArgv* score, CmdArgv*
 
 static int _loadIncrFromDB(redisClient* c)
 {
-    MYSQL* conn = readConn->conn;
+    MYSQL* conn = _readConn->conn;
     char* key = c->argv[1]->ptr;
-    char* sql = readConn->sqlbuff;
+    char* sql = _readConn->sqlbuff;
     char* end = _strmov(sql, "SELECT `incr` FROM `INCR_TAB` WHERE `key` = '");
     end += mysql_real_escape_string(conn, end, key, strlen(key));
     end = _strmov(end, "' LIMIT 1");
@@ -784,7 +786,7 @@ static int _lockTable(const char* table)
 {
     int key = dictGenHashFunction(table, strlen(table));
     key &= LOCK_TABLE_NUM_MASK;
-    pthread_mutex_lock(&lockTableDict[key]);
+    pthread_mutex_lock(&_lockTableDict[key]);
     return DB_RET_SUCCESS;
 }
 
@@ -792,7 +794,7 @@ static int _unlockTable(const char* table)
 {
     int key = dictGenHashFunction(table, strlen(table));
     key &= LOCK_TABLE_NUM_MASK;
-    pthread_mutex_unlock(&lockTableDict[key]);
+    pthread_mutex_unlock(&_lockTableDict[key]);
     return DB_RET_SUCCESS;
 }
 
@@ -800,7 +802,7 @@ int initDBLockDict(void)
 {
     int i = 0;
     for (; i < LOCK_TABLE_NUM; i++) {
-        pthread_mutex_init(&lockTableDict[i], NULL);
+        pthread_mutex_init(&_lockTableDict[i], NULL);
     }
     return DB_RET_SUCCESS;
 }
