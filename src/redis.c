@@ -1553,6 +1553,7 @@ void initServer()
     for (j = 0; j < server.dbnum; j++) {
         server.db[j].dict = dictCreate(&dbDictType, NULL);
         server.db[j].expires = dictCreate(&keyptrDictType, NULL);
+        server.db[j].lastsaves = dictCreate(&keyptrDictType, NULL);
         server.db[j].blocking_keys = dictCreate(&keylistDictType, NULL);
         server.db[j].ready_keys = dictCreate(&setDictType, NULL);
         server.db[j].watched_keys = dictCreate(&keylistDictType, NULL);
@@ -2414,12 +2415,12 @@ sds genRedisInfoString(char* section)
         int sleepSum = 0;
         unsigned long long wsize = 0;
         unsigned long long rsize = 0;
-        int singleuntreatedSize = 0;
-        int singlesleepSum = 0;
-        unsigned long long singlewsize = 0;
-        unsigned long long singlersize = 0;
+        int lockUntreatedSize = 0;
+        int lockSleepSum = 0;
+        unsigned long long lockWsize = 0;
+        unsigned long long lockRsize = 0;
         persistenceInfo(&untreatedSize, &sleepSum, &wsize, &rsize, pmgr);
-        persistenceInfo(&singleuntreatedSize, &singlesleepSum, &singlewsize, &singlersize, lockPmgr);
+        persistenceInfo(&lockUntreatedSize, &lockSleepSum, &lockWsize, &lockRsize, lockPmgr);
         info = sdscatprintf(info,
                             "# Stats\r\n"
                             "total_connections_received:%lld\r\n"
@@ -2452,10 +2453,10 @@ sds genRedisInfoString(char* section)
                             dictSize(server.pubsub_channels),
                             listLength(server.pubsub_patterns),
                             server.stat_fork_time,
-                            singlesleepSum,
-                            singleuntreatedSize,
-                            singlewsize,
-                            singlersize,
+                            lockSleepSum,
+                            lockUntreatedSize,
+                            lockWsize,
+                            lockRsize,
                             sleepSum,
                             untreatedSize,
                             wsize, 
@@ -2764,7 +2765,8 @@ int freeMemoryIfNeeded(void)
             }
 
             /* Finally remove the selected key. */
-            if (bestkey) {
+            int now = (int)time(NULL);
+            if (bestkey && now - getLastSaveTime(&server.db[j], bestkey) > server.persistenceTolerateTime) {
                 long long delta;
 
                 robj* keyobj = createStringObject(bestkey, sdslen(bestkey));
@@ -3092,9 +3094,26 @@ int main(int argc, char** argv)
     }
 
     aeSetBeforeSleepProc(server.el, beforeSleep);
+    while (!checkPersistenceDone()) {
+        usleep(1000);
+    }
     aeMain(server.el);
     aeDeleteEventLoop(server.el);
     return 0;
 }
 
+int checkPersistenceDone(void)
+{
+    int untreatedSize = 0;
+    int sleepSum = 0;
+    unsigned long long wsize = 0;
+    unsigned long long rsize = 0;
+    int lockUntreatedSize = 0;
+    int lockSleepSum = 0;
+    unsigned long long lockWsize = 0;
+    unsigned long long lockRsize = 0;
+    persistenceInfo(&untreatedSize, &sleepSum, &wsize, &rsize, pmgr);
+    persistenceInfo(&lockUntreatedSize, &lockSleepSum, &lockWsize, &lockRsize, lockPmgr);
+    return untreatedSize == 0 && lockUntreatedSize == 0;
+}
 /* The End */

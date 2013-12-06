@@ -1079,6 +1079,7 @@ void zaddGenericCommand(redisClient* c, int incr)
             redisPanic("Unknown sorted set encoding");
         }
     }
+    setLastSaveTime(c->db, key->ptr);
     zfree(scores);
     if (incr) { /* ZINCRBY */
         addReplyDouble(c, score);
@@ -1154,6 +1155,7 @@ void zremCommand(redisClient* c)
         signalModifiedKey(c->db, key);
         server.dirty += deleted;
     }
+    setLastSaveTime(c->db, key->ptr);
     addReplyLongLong(c, deleted);
 }
 
@@ -1197,6 +1199,7 @@ void zremrangebyscoreCommand(redisClient* c)
         signalModifiedKey(c->db, key);
     }
     server.dirty += deleted;
+    setLastSaveTime(c->db, key->ptr);
     addReplyLongLong(c, deleted);
 }
 
@@ -1266,6 +1269,7 @@ void zremrangebyrankCommand(redisClient* c)
         signalModifiedKey(c->db, key);
     }
     server.dirty += deleted;
+    setLastSaveTime(c->db, key->ptr);
     addReplyLongLong(c, deleted);
 }
 

@@ -98,6 +98,7 @@ void setGenericCommand(redisClient* c, int flags, robj* key, robj* val, robj* ex
         return;
     }
     setKey(c->db, key, val);
+    setLastSaveTime(c->db, key->ptr);
     server.dirty++;
     if (expire) {
         setExpire(c->db, key, mstime() + milliseconds);
@@ -408,6 +409,7 @@ void incrDecrCommand(redisClient* c, long long incr)
     } else {
         dbAdd(c->db, c->argv[1], new);
     }
+    setLastSaveTime(c->db, c->argv[1]->ptr);
     signalModifiedKey(c->db, c->argv[1]);
     server.dirty++;
     addReply(c, shared.colon);

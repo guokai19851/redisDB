@@ -118,7 +118,6 @@ void dbAdd(redisDb* db, robj* key, robj* val)
 {
     sds copy = sdsdup(key->ptr);
     int retval = dictAdd(db->dict, copy, val);
-
     redisAssertWithInfo(NULL, key, retval == REDIS_OK);
 }
 
@@ -192,6 +191,7 @@ int dbDelete(redisDb* db, robj* key)
 {
     /* Deleting an entry from the expires dict will not free the sds of
      * the key, because it is shared with the main dictionary. */
+    dictDelete(db->lastsaves, key->ptr);
     if (dictSize(db->expires) > 0) {
         dictDelete(db->expires, key->ptr);
     }
@@ -822,4 +822,23 @@ int* zunionInterGetKeys(struct redisCommand* cmd, robj** argv, int argc, int* nu
     }
     *numkeys = num;
     return keys;
+}
+
+long long getLastSaveTime(redisDb* db, sds key)
+{
+    dictEntry* de;
+    if (dictSize(db->lastsaves) == 0 ||
+        (de = dictFind(db->lastsaves, key)) == NULL) {
+        return -1;
+    }
+    return dictGetSignedIntegerVal(de);
+}
+
+void setLastSaveTime(redisDb* db, sds key)
+{
+    long long now = (long long)time(NULL);
+    dictEntry* kde, *de;
+    kde = dictFind(db->dict, key);
+    de = dictReplaceRaw(db->lastsaves, dictGetKey(kde));
+    dictSetSignedIntegerVal(de, now);
 }

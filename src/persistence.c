@@ -126,11 +126,11 @@ static int _packCmd(char* wbuf, redisClient* c)
     return offset;
 }
 
-static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** cmdArgvs, redisCommandProc** procPtr, int* time)
+static int _unpackCmd(const char* rbuf, int rbufLen, CmdArgv** cmdArgvs, redisCommandProc** procPtr, int* t)
 {
     const char* end = rbuf;
     int i = 0;
-    *time = *(int*)end;
+    *t = *(int*)end;
     end += sizeof(int);
     memcpy(procPtr, end, sizeof(redisCommandProc*));
     redisLog(REDIS_DEBUG, "unpackCmd proc %p ", *procPtr);
@@ -170,10 +170,12 @@ static void* _writeDBPorcess(void* arg)
         } else {
             CmdArgv* cmdArgvs[MAX_CMD_ARGV];
             redisCommandProc* proc;
-            int time = 0;
-            int argc = _unpackCmd(worker->buf, worker->buflen, cmdArgvs, &proc, &time);
+            int t = 0;
+            int argc = _unpackCmd(worker->buf, worker->buflen, cmdArgvs, &proc, &t);
             assert(argc > 0);
-            writeToDB(argc, cmdArgvs, proc, worker->dbConn, time);
+            int now = (int)time(NULL);
+            assert(now - t <= server.persistenceTolerateTime);
+            writeToDB(argc, cmdArgvs, proc, worker->dbConn, t);
             worker->buflen = 0;
         }
     }

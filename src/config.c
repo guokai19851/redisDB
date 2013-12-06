@@ -473,6 +473,8 @@ void loadServerConfigFromString(char* config)
             server.lockPersistenceMmapFile = strcat(zstrdup(argv[1]), "_lock");
         } else if (!strcasecmp(argv[0], "write_thread_num")) {
             server.writeThreadNum = atoi(argv[1]);
+        } else if (!strcasecmp(argv[0], "persistence_tolerate_time")) {
+            server.persistenceTolerateTime = atoi(argv[1]);
         } else {
             err = "Bad directive or wrong number of arguments";
             goto loaderr;

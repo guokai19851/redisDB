@@ -350,6 +350,7 @@ void pushGenericCommand(redisClient* c, int where)
         listTypePush(lobj, c->argv[j], where);
         pushed++;
     }
+    setLastSaveTime(c->db, c->argv[1]->ptr);
     addReplyLongLong(c, waiting + (lobj ? listTypeLength(lobj) : 0));
     if (pushed) {
         signalModifiedKey(c->db, c->argv[1]);
@@ -553,6 +554,7 @@ void popGenericCommand(redisClient* c, int where)
     }
 
     robj* value = listTypePop(o, where);
+    setLastSaveTime(c->db, c->argv[1]->ptr);
     if (value == NULL) {
         addReply(c, shared.nullbulk);
     } else {
