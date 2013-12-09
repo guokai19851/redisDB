@@ -23,3 +23,6 @@ write_thread_num 写DB线程数
 另外因为是同步读DB, 如果大量的cache失效会带来严重的io阻塞, 从而影响性能, 后期考虑加入配置选项在redis启动以后主动从db恢复数据
 
 基于redis 2.6.16修改
+
+qq 806975923
+mail guokai19851@foxmail.com
