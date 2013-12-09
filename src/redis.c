@@ -2766,7 +2766,7 @@ int freeMemoryIfNeeded(void)
 
             /* Finally remove the selected key. */
             int now = (int)time(NULL);
-            if (bestkey && now - getLastSaveTime(&server.db[j], bestkey) > server.persistenceTolerateTime) {
+            if (bestkey && (now - getLastSaveTime(&server.db[j], bestkey) > server.persistenceTolerateTime * 2)) {
                 long long delta;
 
                 robj* keyobj = createStringObject(bestkey, sdslen(bestkey));
