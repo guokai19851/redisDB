@@ -475,6 +475,8 @@ void loadServerConfigFromString(char* config)
             server.writeThreadNum = atoi(argv[1]);
         } else if (!strcasecmp(argv[0], "persistence_tolerate_time")) {
             server.persistenceTolerateTime = atoi(argv[1]);
+        } else if (!strcasecmp(argv[0], "dynamic_create_table")) {
+            server.dynamicCreateTable = yesnotoi(argv[1]); 
         } else {
             err = "Bad directive or wrong number of arguments";
             goto loaderr;

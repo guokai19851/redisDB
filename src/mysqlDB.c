@@ -84,9 +84,7 @@ static int _query(const char* sql, MYSQL* conn)
     mysql_query(conn, sql);
     int err = mysql_errno(conn);
     if (err > 0) {
-        if (err != DB_RET_TABLE_NOTEXIST) {
-            redisLog(REDIS_WARNING, "%d, %s, %s", err, sql, mysql_error(conn));
-        }
+        redisLog(REDIS_WARNING, "%d, %s, %s", err, sql, mysql_error(conn));
         return err;
     }
     int warningCnt = mysql_warning_count(conn);
@@ -152,7 +150,10 @@ int writeToDB(int argc, CmdArgv** cmdArgvs, redisCommandProc* proc, DBConn* dbCo
 
     } else if (proc == lpushCommand || proc == rpushCommand || proc == lpushxCommand || proc == rpushxCommand) {
         int where = (proc == lpushCommand || proc == lpushxCommand) ? REDIS_HEAD : REDIS_TAIL;
-        int createNotExist = (proc == lpushCommand || proc == rpushCommand) ? 1 : 0;
+        int createNotExist = 0;
+        if (server.dynamicCreateTable == 1) {
+            createNotExist = (proc == lpushCommand || proc == rpushCommand) ? 1 : 0;
+        }
         for (i = 1; i < argc; i++) {
             ret = _pushListToDB(table, ID, cmdArgvs[i], where, createNotExist, dbConn);
             if (ret != 0) {
@@ -338,7 +339,7 @@ static int _writeStrToDB(const char* table, const char* ID, CmdArgv* val, int ex
     *end++ = '\'';
     *end++ = '\0';
     int ret = _query(sql, conn);
-    if (ret == DB_RET_TABLE_NOTEXIST) {
+    if (ret == DB_RET_TABLE_NOTEXIST && server.dynamicCreateTable == 1) {
         _createStrTable(table, dbConn);
         return _writeStrToDB(table, ID, val, expireat, dbConn);
     }
@@ -436,7 +437,6 @@ static int _pushListToDB(const char* table, const char* ID, CmdArgv* val, int wh
     *end++ = '\0';
 
     ret = _query(sql, conn);
-    assert(ret != DB_RET_TABLE_NOTEXIST);
     return ret;
 }
 
@@ -576,7 +576,7 @@ static int _zaddToDB(const char* table, const char* ID, CmdArgv* score, CmdArgv*
     *end++ = '\0';
 
     int ret = _query(sql, conn);
-    if (ret == DB_RET_TABLE_NOTEXIST) {
+    if (ret == DB_RET_TABLE_NOTEXIST && server.dynamicCreateTable == 1) {
         _createZsetTable(table, dbConn);
         return _zaddToDB(table, ID, score, member, incr, dbConn);
     }
@@ -631,7 +631,7 @@ static int _incrToDB(CmdArgv* key, CmdArgv* incr, DBConn* dbConn)
     *end++ = '\'';
     *end++ = '\0';
     int ret = _query(sql, conn);
-    if (ret == DB_RET_TABLE_NOTEXIST) {
+    if (ret == DB_RET_TABLE_NOTEXIST && server.dynamicCreateTable == 1) {
         _createIncrTable(dbConn);
         return _incrToDB(key, incr, dbConn);
     }
@@ -779,7 +779,10 @@ static int _pingDB(MYSQL* conn)
 
 int isDBError(int ret)
 {
-    return ret != DB_RET_TABLE_NOTEXIST && ret != DB_RET_NOTRESULT && ret != DB_RET_EXPIRE;
+    if (ret == DB_RET_TABLE_NOTEXIST && server.dynamicCreateTable == 0) {
+        return 0;
+    } 
+    return ret != DB_RET_SUCCESS && ret != DB_RET_NOTRESULT && ret != DB_RET_EXPIRE && ret != DB_RET_TABLE_NOTEXIST;
 }
 
 static int _lockTable(const char* table)
